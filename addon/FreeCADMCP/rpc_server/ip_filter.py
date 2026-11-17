@@ -13,6 +13,8 @@ import base64
 import hmac
 import ipaddress
 import re
+import socket
+import sys
 from email.message import Message
 from socketserver import ThreadingMixIn
 from typing import Any
@@ -117,14 +119,14 @@ def authorization_ok(header_value: str, token: str) -> bool:
     """
     if header_value.startswith("Bearer "):
         supplied = header_value[len("Bearer "):].strip()
-        return hmac.compare_digest(supplied, token)
+        return hmac.compare_digest(supplied.encode("utf-8"), token.encode("utf-8"))
     if header_value.startswith("Basic "):
         try:
             decoded = base64.b64decode(header_value[len("Basic "):], validate=True).decode("utf-8")
         except Exception:
             return False
         _, _, password = decoded.partition(":")
-        return hmac.compare_digest(password, token)
+        return hmac.compare_digest(password.encode("utf-8"), token.encode("utf-8"))
     return False
 
 
@@ -161,6 +163,19 @@ class FilteredXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
     """
 
     daemon_threads = True
+
+    # SimpleXMLRPCServer sets SO_REUSEADDR. On Windows that lets a second
+    # process bind a port that is already listening, so a second FreeCAD
+    # instance would "start" on 9875 too and silently split client requests
+    # between the two. Bind exclusively there instead; a second instance then
+    # fails with WinError 10048, and a quick restart still rebinds while old
+    # connections sit in TIME_WAIT.
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self):
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, addr, allowed_ips_str="127.0.0.1", auth_token="", **kwargs):
         self._allowed_networks = _parse_allowed_ips(allowed_ips_str)
@@ -208,7 +223,7 @@ def validate_allowed_ips(allowed_ips_str):
     Checks performed:
     1. The overall string is well-formed comma-separated (no leading/trailing
        commas, no empty entries between commas, not blank).
-    2. Each individual entry is a valid IPv4/IPv6 address or CIDR subnet
+    2. Each individual entry is a valid IPv4 address or CIDR subnet
        (validated via the stdlib ``ipaddress`` module).
     """
     errors = []
@@ -226,7 +241,10 @@ def validate_allowed_ips(allowed_ips_str):
     for entry in allowed_ips_str.split(","):
         entry = entry.strip()
         try:
-            ipaddress.ip_network(entry, strict=False)
+            network = ipaddress.ip_network(entry, strict=False)
+            if network.version != 4:
+                errors.append(f"IPv6 is not supported by the addon listener: '{entry}'")
+                continue
             valid.append(entry)
         except ValueError:
             errors.append(f"Invalid IP/subnet: '{entry}'")

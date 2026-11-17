@@ -36,6 +36,24 @@ and `view_name`. The global flag takes precedence over `include_screenshot`.
 See [screenshot options](tools.md#screenshot-options) for the applicable tools
 and the explicit `get_view` tool.
 
+### NVIDIA / Hyprland screenshot fallback
+
+Screenshots normally use FreeCAD's renderer, with a fallback to the active
+OpenGL viewport when the rendered image is flat. Other desktop windows are
+not captured by default.
+
+If those paths produce black or corrupted images under NVIDIA + Hyprland,
+start **FreeCAD itself** with `FREECAD_MCP_ALLOW_SCREEN_CAPTURE=1` to opt into
+the `hyprctl` / `grim` screen-capture fallback. This requires Qt 6/PySide6 and
+both commands on PATH. Bring FreeCAD's 3D view to the front and keep its viewport
+unobscured. The fallback requires a unique window matching FreeCAD's PID and
+application class, verifies the active window and capture bounds, rejects
+overlapping windows/top-layer surfaces, and checks again after capture. It does
+not raise or focus another window automatically; failed checks use the renderer.
+
+This opt-in captures composited desktop pixels. A transient overlay can race
+the checks, so leave it disabled when screen contents must remain private.
+
 ## Remote connections
 
 By default, the RPC server listens on `localhost` and does not accept remote
@@ -57,9 +75,9 @@ In the **FreeCAD MCP** toolbar:
 
 1. Check **Remote Connections**. On the next server restart, the RPC server binds
    to `0.0.0.0` (all interfaces). It only accepts connections from the IP addresses
-   or CIDR subnets configured in **Allowed IPs**, which defaults to `127.0.0.1`.
+   or IPv4 CIDR subnets configured in **Allowed IPs**, which defaults to `127.0.0.1`.
 2. Click **Configure Allowed IPs** and enter a comma-separated list of allowed
-   client IP addresses or CIDR subnets, for example:
+   client IP addresses or IPv4 CIDR subnets, for example:
 
    ```text
    192.168.1.100, 10.0.0.0/24
@@ -83,8 +101,8 @@ Pass `--host` with the IP address or hostname of the machine running FreeCAD:
 }
 ```
 
-The `--host` value is validated on startup and must be a valid IPv4/IPv6 address
-or hostname. Restart your MCP client after updating its configuration.
+The `--host` value is validated on startup and must be a valid IPv4 address
+or hostname resolving to IPv4. The addon listener does not support IPv6. Restart your MCP client after updating its configuration.
 
 `--host` selects the GUI RPC host. [Headless execution](execution.md#headless-execution)
 runs on the machine hosting the MCP server, so its file paths must be accessible
@@ -130,3 +148,37 @@ ssh -N -L 9875:localhost:9875 user@freecad-host
 Keep the MCP server on its default `--host localhost`. With remote connections
 off, the RPC server only answers requests addressed to `localhost` or a
 loopback address such as `127.0.0.1`.
+
+## HTTP and SSE transports
+
+By default the MCP server speaks stdio and the MCP client launches it. To run it
+as a long-lived HTTP service instead (for example in a container):
+
+```bash
+freecad-mcp --transport streamable-http          # http://127.0.0.1:8000/mcp
+freecad-mcp --transport sse                      # http://127.0.0.1:8000/sse
+```
+
+`streamable-http` is preferred; `sse` is deprecated in the MCP specification.
+Use `--listen-host` and `--listen-port` to change the address. These options are
+separate from `--host`, which is the FreeCAD RPC server the MCP server connects to.
+
+The MCP server can call `execute_code`, so exposure is guarded:
+
+- It listens on `127.0.0.1` by default.
+- Listening on any non-loopback address (such as `0.0.0.0`) is refused unless a
+  bearer token is set with the `FREECAD_MCP_LISTEN_TOKEN` environment variable
+  (preferred) or `--listen-token`. Clients send `Authorization: Bearer <token>`.
+  This token is separate from `FREECAD_MCP_TOKEN`, which authenticates to the
+  FreeCAD RPC server.
+- A token can also be set on loopback to require it from local clients.
+- DNS-rebinding protection is always on: requests whose `Host` header is not a
+  loopback name are rejected with 421. Add names with `--allowed-host HOST[:PORT]`.
+
+### Running in a container
+
+See the [Docker guide](docker.md) for build and run commands. With `--network host` the defaults need no extra flags. With bridge networking the server has to bind `0.0.0.0`, so
+it requires `FREECAD_MCP_LISTEN_TOKEN` by default. `--allow-insecure-remote` (or
+`FREECAD_MCP_ALLOW_INSECURE_REMOTE=1`) skips that requirement. Only use it when the
+published port is restricted to the host's loopback (`-p 127.0.0.1:8000:8000`).
+`execute_code_headless` is unavailable in the image because it has no FreeCAD.

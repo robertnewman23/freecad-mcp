@@ -43,20 +43,12 @@ class FreeCADMCPAddonWorkbench(Workbench):
 Gui.addWorkbench(FreeCADMCPAddonWorkbench())
 
 
-def _auto_start_mcp():
-    try:
-        from rpc_server import rpc_server
+# Auto-start lives in a real module: names defined in this exec'd file are not
+# reliably visible to callbacks that run later, and a single unverified
+# singleShot could fail with no trace. See rpc_server/autostart.py.
+try:
+    from rpc_server import autostart as _mcp_autostart
 
-        settings = rpc_server.load_settings()
-        if not settings.get("auto_start_rpc", False):
-            return
-
-        msg = rpc_server.start_rpc_server()
-        FreeCAD.Console.PrintMessage(f"[MCP] Auto-start: {msg}\n")
-    except Exception as e:
-        FreeCAD.Console.PrintWarning(f"[MCP] Auto-start failed: {e}\n")
-
-
-from PySide import QtCore
-
-QtCore.QTimer.singleShot(0, _auto_start_mcp)
+    _mcp_autostart.schedule()
+except Exception as _e:
+    FreeCAD.Console.PrintWarning(f"[MCP] Auto-start setup failed: {_e}\n")
