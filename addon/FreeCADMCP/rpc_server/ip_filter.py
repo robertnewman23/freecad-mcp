@@ -13,6 +13,8 @@ import base64
 import hmac
 import ipaddress
 import re
+import socket
+import sys
 from email.message import Message
 from socketserver import ThreadingMixIn
 from typing import Any
@@ -161,6 +163,19 @@ class FilteredXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
     """
 
     daemon_threads = True
+
+    # SimpleXMLRPCServer sets SO_REUSEADDR. On Windows that lets a second
+    # process bind a port that is already listening, so a second FreeCAD
+    # instance would "start" on 9875 too and silently split client requests
+    # between the two. Bind exclusively there instead; a second instance then
+    # fails with WinError 10048, and a quick restart still rebinds while old
+    # connections sit in TIME_WAIT.
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self):
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, addr, allowed_ips_str="127.0.0.1", auth_token="", **kwargs):
         self._allowed_networks = _parse_allowed_ips(allowed_ips_str)
